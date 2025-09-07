@@ -1,14 +1,21 @@
 # ffmpego
 
-A clean, fluent Go library for assembling ffmpeg command arguments with validated output flags and filter_complex graphs.
+A clean, fluent Go library for assembling ffmpeg command arguments with validated output flags and filter_complex graphs. Includes a lightweight runner to execute ffmpeg and optionally parse progress output.
 
 Key files:
 - [pkg/ffmpego.go](pkg/ffmpego.go)
-- [pkg/output_flags.go](pkg/output_flags.go)
+- [pkg/flags.go](pkg/flags.go)
+- [pkg/flag_helpers.go](pkg/flag_helpers.go)
 - [pkg/filter_types.go](pkg/filter_types.go)
 - [pkg/filter_builders.go](pkg/filter_builders.go)
 - [pkg/filter_complex_builder.go](pkg/filter_complex_builder.go)
-- [examples/filter_graph.go](examples/filter_graph.go)
+- [pkg/output_flags.go](pkg/output_flags.go)
+- [pkg/output_builder.go](pkg/output_builder.go)
+- [pkg/executor.go](pkg/executor.go)
+- Examples:
+  - [examples/default/](examples/default/)
+  - [examples/filter_graph/](examples/filter_graph/)
+  - [examples/multiple_outputs/](examples/multiple_outputs/)
 
 Features
 
@@ -16,23 +23,28 @@ Features
 - Strongly-typed, validated filters and flags
 - Single -filter_complex assembled from many graph units
 - Output builder for convenient output configuration
-- Example program and unit tests
+- Optional runner to invoke ffmpeg and parse progress
+- Example programs and unit tests
 
 Requirements
 
-- Go 1.21+ (module: m4urici0gm/ffmpego)
+- Go 1.24+
 - ffmpeg installed and available in PATH
 
 Install
 
-Use as a module import:
-- module name: m4urici0gm/ffmpego
-- import path for code examples: ffmpego "m4urici0gm/ffmpego/pkg"
+Use as a module:
+- Module name: m4urici0gm/ffmpego
+- Import path for code: ffmpego "m4urici0gm/ffmpego/pkg"
+
+Go get:
+```bash
+go get m4urici0gm/ffmpego
+```
 
 Quick start
 
-Basic crop + scale with H.264 and AAC:
-
+Build arguments only:
 ```go
 package main
 
@@ -44,13 +56,22 @@ import (
 )
 
 func main() {
-	cmd := ffmpego.New().
-		Input("input.mp4").
-		WithFilter(ffmpego.NewCrop("0:v", "cropped", 800, 600, 100, 50)).
-		WithFilter(ffmpego.NewScale("cropped", "scaled", 1280, 720)).
+	cmd := ffmpego.New(""). // pass "" to use the default binary
+		WithOptions(
+			ffmpego.NewFfmpegOptions(
+				ffmpego.WithInput("in.mp4"),
+				ffmpego.WithOverwrite(),
+			),
+		).
+		WithFilterGraph(
+			ffmpego.NewComplexFilterBuilder().
+				Add(ffmpego.WithCrop("0:v", "cropped", 800, 600, 100, 50)).
+				Add(ffmpego.WithScale("cropped", "scaled", 1280, 720)).
+				Build(),
+		).
 		Output(
 			ffmpego.NewOutputBuilder().
-				File("output.mp4").
+				File("out.mp4").
 				WithFlag(ffmpego.VideoCodecH264).
 				WithFlag(ffmpego.AudioCodecAAC).
 				WithFlag(ffmpego.CRFGoodQuality).
@@ -66,67 +87,98 @@ func main() {
 }
 ```
 
+Execute with the built-in runner:
+```go
+package main
+
+import (
+	"context"
+	"log"
+	ffmpego "m4urici0gm/ffmpego/pkg"
+)
+
+func main() {
+	cmd := ffmpego.New("").
+		WithOptions(
+			ffmpego.NewFfmpegOptions(
+				ffmpego.WithInput("in.mp4"),
+				ffmpego.WithOverwrite(),
+				// Optional: write progress key=value lines to stdout (pipe:1)
+				ffmpego.PipeProgress,
+			),
+		).
+		WithFilterGraph(
+			ffmpego.NewComplexFilterBuilder().
+				Add(ffmpego.WithScale("0:v", "scaled", 1280, 720)).
+				Build(),
+		).
+		Output(
+			ffmpego.NewOutputBuilder().
+				File("out.mp4").
+				WithFlag(ffmpego.VideoCodecH264).
+				WithFlag(ffmpego.CRFGoodQuality).
+				Build(),
+		).
+		// Optional: receive parsed progress updates (best when progress is enabled)
+		WithProgressCallback(func(p ffmpego.Progress) {
+			log.Printf("frame=%d fps=%.2f speed=%s progress=%s", p.Frame, p.FPS, p.Speed, p.Progress)
+		})
+
+	ctx := context.Background()
+	if err := ffmpego.NewRunner(cmd).Run(ctx); err != nil {
+		log.Fatalf("ffmpeg failed: %v", err)
+	}
+}
+```
+
 Filter graphs
 
-There are two primary ways to build graphs:
+Compose with the FilterGraphBuilder:
 
-1) Add explicit, validated filter units
+- Builder: [go.declaration()](pkg/filter_complex_builder.go:6)
+- New builder: [go.declaration()](pkg/filter_complex_builder.go:10)
+- Filter graph container: [go.declaration()](pkg/filter_builders.go:8)
 
-- Construct validated filter units then add them with WithFilter/WithFilters:
-
+Example:
 ```go
-cmd := ffmpego.New().
-	Input("input.mp4").
-	WithFilter(ffmpego.NewCrop("0:v", "a", 800, 600, 100, 50)).
-	WithFilter(ffmpego.NewRotate("a", "b", ffmpego.Rotate90)).
-	WithFilter(ffmpego.NewScale("b", "c", 1280, 720))
+filterGraph := ffmpego.NewComplexFilterBuilder().
+	Add(ffmpego.WithCrop("0:v", "s1", 800, 600, 100, 50)).
+	Add(ffmpego.WithRotate("s1", "s2", ffmpego.Rotate90)).
+	Add(ffmpego.WithScale("s2", "s3", 1280, 720)).
+	Build()
 ```
 
-2) Use the helper builder functions with ComplexFilterBuilder
+Available labeled helper filters (validated before build):
 
-- Compose using With helper functions; the builder materializes to validated units:
-
-```go
-builder := ffmpego.NewComplexFilterBuilder().
-	With(ffmpego.WithCrop("0:v", "s1", 800, 600, 100, 50)).
-	With(ffmpego.WithRotate("s1", "s2", ffmpego.Rotate90)).
-	With(ffmpego.WithScale("s2", "s3", 1280, 720))
-
-cmd := ffmpego.New().Input("input.mp4")
-builder.Apply(cmd) // attaches all built units into a single -filter_complex
-```
-
-Available filter units
-
-- ScaleFilter → renders: [input]scale=width:height[output]
-  - NewScale(input, output string, width, height int)
+- WithScale: [go.declaration()](pkg/filter_builders.go:55)
+  - Renders: "[input]scale=width:height[output]"
   - Validation: width/height > 0 or -1/-2 for aspect preservation
-- CropFilter → renders: [input]crop=w:h:x:y[output]
-  - NewCrop(input, output string, w, h, x, y int)
+- WithCrop: [go.declaration()](pkg/filter_builders.go:68)
+  - Renders: "[input]crop=w:h:x:y[output]"
   - Validation: w,h > 0; x,y ≥ 0
-- RotateFilter (transpose) → renders: [input]transpose=mode[output]
-  - NewRotate(input, output string, mode TransposeMode)
-  - Validation: mode in {0,1,2,3}
-  - Provided alias: Rotate90 (clockwise)
-- SplitFilter → renders: [input]split=n[out0]...[out{n-1}]
-  - NewSplit(input string, n int) auto-generates labels "1".."n"
+- WithRotate: [go.declaration()](pkg/filter_builders.go:84)
+  - Renders: "[input]transpose=mode[output]"
+  - Validation: mode in {0,1,2,3}; alias Rotate90
+- WithSplit: [go.declaration()](pkg/filter_builders.go:97)
+  - Renders: "[input]split=n[out0]...[out{n-1}]"
   - Validation: n ≥ 2; outputs count must match n
 
-Helper functions for graph composition
+Low-level helpers:
 
-- WithFilterFn/WithFilterFns on the command accept FilterFn builders
-- With helper functions that add validated struct units:
-  - WithScale(input, output string, width, height int)
-  - WithCrop(input, output string, w, h, x, y int)
-  - WithRotate(input, output string, mode TransposeMode)
-  - WithSplit(input string, n int, outputs ...string)
-  - WithFilterExpr(expr string) // low-level fallback, no labels
-  - WithFilterChain(input, expr, output string)
+- WithFilterExpr: [go.declaration()](pkg/filter_builders.go:32)
+- WithFilterChain: [go.declaration()](pkg/filter_builders.go:40)
 
 Output configuration
 
-- Create outputs with NewOutputBuilder or NewOutputDescriptor:
+Use OutputBuilder to compose output flags:
 
+- OutputBuilder: [go.declaration()](pkg/output_builder.go:5)
+- NewOutputBuilder: [go.declaration()](pkg/output_builder.go:10)
+- WithFlag: [go.declaration()](pkg/output_builder.go:17)
+- File: [go.declaration()](pkg/output_builder.go:23)
+- OutputDescriptor: [go.declaration()](pkg/output_flags.go:34)
+
+Example:
 ```go
 out := ffmpego.NewOutputBuilder().
 	File("out.mp4").
@@ -136,234 +188,169 @@ out := ffmpego.NewOutputBuilder().
 	WithFlag(ffmpego.PresetFast).
 	Build()
 
-cmd := ffmpego.New().
-	Input("in.mp4").
+cmd := ffmpego.New("").
+	WithOptions(ffmpego.NewFfmpegOptions(ffmpego.WithInput("in.mp4"))).
 	Output(out)
 ```
 
-Common flag presets (all validated before being parsed)
+Common flag presets (all validated)
 
 - Codecs:
-  - VideoCodecH264, VideoCodecH265, VideoCodecVP9, VideoCodecAV1
-  - AudioCodecAAC, AudioCodecMP3, AudioCodecOpus
-- Presets:
-  - PresetUltraFast, PresetFast, PresetMedium, PresetSlow, PresetVeryslow
-- Quality (CRF):
-  - CRFHighQuality (18), CRFGoodQuality (23), CRFMediumQuality (28), CRFLowQuality (35)
+  - Video: VideoCodecH264, VideoCodecH265, VideoCodecVP9, VideoCodecAV1 [go.declaration()](pkg/output_flags.go:9)
+  - Audio: AudioCodecAAC, AudioCodecMP3, AudioCodecOpus [go.declaration()](pkg/output_flags.go:15)
+- Presets: PresetUltraFast, PresetFast, PresetMedium, PresetSlow, PresetVeryslow [go.declaration()](pkg/output_flags.go:20)
+- Quality (CRF): CRFHighQuality(18), CRFGoodQuality(23), CRFMediumQuality(28), CRFLowQuality(35) [go.declaration()](pkg/output_flags.go:27)
 - Other builders:
-  - WithBitrate("2500k"), WithAudioBitrate("128k"), WithFormat("mp4"), WithSampleRate(44100), WithChannels(2), WithMap("[vout]")
+  - WithBitrate [go.declaration()](pkg/output_flags.go:109)
+  - WithAudioBitrate [go.declaration()](pkg/output_flags.go:130)
+  - WithFormat [go.declaration()](pkg/output_flags.go:123)
+  - WithSampleRate [go.declaration()](pkg/output_flags.go:137)
+  - WithChannels [go.declaration()](pkg/output_flags.go:144)
+  - WithMap [go.declaration()](pkg/output_flags.go:151)
+  - WithFile (output path) [go.declaration()](pkg/output_flags.go:172)
+
+Global ffmpeg options
+
+Build via FfmpegOptions:
+
+- FfmpegOptions: [go.declaration()](pkg/flags.go:3)
+- NewFfmpegOptions: [go.declaration()](pkg/flags.go:7)
+
+Common helpers:
+- WithInput: [go.declaration()](pkg/flag_helpers.go:7)
+- WithOverwrite: [go.declaration()](pkg/flag_helpers.go:14)
+- WithLogLevel: [go.declaration()](pkg/flag_helpers.go:20)
+- WithProgress and preset PipeProgress: [go.declaration()](pkg/flag_helpers.go:26)
+
+Example:
+```go
+opts := ffmpego.NewFfmpegOptions(
+	ffmpego.WithInput("in.mp4"),
+	ffmpego.WithOverwrite(),
+	ffmpego.WithLogLevel("info"),
+	// Writes progress key=value lines to stdout; pair with a progress callback.
+	ffmpego.PipeProgress,
+)
+```
+
+Runner (optional execution)
+
+- Runner type: [go.declaration()](pkg/executor.go:25)
+- NewRunner: [go.declaration()](pkg/executor.go:31)
+- Run: [go.declaration()](pkg/executor.go:63)
+- ProgressCallback on builder: [go.declaration()](pkg/ffmpego.go:78)
+
+Notes:
+- The runner invokes the "ffmpeg" binary on PATH with the built args.
+- To use a custom binary, execute the args yourself (e.g., with os/exec).
+
+Interfaces
+
+- OutputFlagParser [go.declaration()](pkg/ffmpego.go:5)
+- FilterComplexParser [go.declaration()](pkg/ffmpego.go:14)
 
 Examples
 
-Run the example program:
-
+Run the examples:
 ```bash
-go run ./examples/filter_graph.go
-```
+# Basic crop/scale example
+go run ./examples/default
 
-It prints composed ffmpeg command arguments, including a single -filter_complex argument assembled from multiple units.
+# Filter graph builder example
+go run ./examples/filter_graph
+
+# Multiple outputs using split
+go run ./examples/multiple_outputs
+```
 
 Validation model
 
-- Every flag or filter unit implements a Validate() error
-- The command Build():
+- Every flag or filter unit implements Validate() error
+- Command Build():
   - Validates all flags and filter units
   - Joins filter units with ';' into a single -filter_complex argument
   - Flattens output flags and file targets
 
 Tests
 
-Run all tests:
-
-```bash
-go test ./...
-```
-
-Look into:
-- [pkg/filter_types_test.go](pkg/filter_types_test.go)
-- [pkg/ffmpego_test.go](pkg/ffmpego_test.go)
-
-Notes
-
-- Examples may assume ffmpeg is installed on the system PATH
-- This library focuses on building arguments; invoking ffmpeg is up to the caller (e.g., using os/exec) after calling Build()
-
-
-## Extending the library
-
-This section explains how to add new filter-complex units and new output flags so they integrate cleanly with validation, the builder APIs, and the single -filter_complex assembly.
-
-References:
-- Filter unit interface [go.declaration()](pkg/ffmpego.go:14)
-- Output flag interface [go.declaration()](pkg/ffmpego.go:8)
-- Filter graph helpers [go.declaration()](pkg/filter_builders.go:7)
-- Output builder [go.declaration()](pkg/output_builder.go:6)
-
-### Adding a new filter (FilterComplexParser)
-
-Every filter graph unit implements:
-- Validate() error — check user inputs up-front
-- Parse() string — return one chain/subgraph, e.g. "[in]expr[outs]"
-
-Example: add a simple BoxBlur filter using FFmpeg's boxblur
-
-1) Create a struct type and implement Validate/Parse:
-
-```go
-// Example file: pkg/filter_types.go
-
-type BoxBlurFilter struct {
-    Input        string
-    Output       string
-    LumaRadius   int // lr
-    LumaPower    int // lp
-    ChromaRadius int // cr
-    ChromaPower  int // cp
-}
-
-func (f BoxBlurFilter) Validate() error {
-    if strings.TrimSpace(f.Input) == "" {
-        return fmt.Errorf("boxblur: input label cannot be empty")
-    }
-    if strings.TrimSpace(f.Output) == "" {
-        return fmt.Errorf("boxblur: output label cannot be empty")
-    }
-    if f.LumaRadius < 0 || f.LumaPower < 0 || f.ChromaRadius < 0 || f.ChromaPower < 0 {
-        return fmt.Errorf("boxblur: all parameters must be non-negative")
-    }
-    return nil
-}
-
-func (f BoxBlurFilter) Parse() string {
-    // boxblur=lr:lp:cr:cp
-    return fmt.Sprintf("[%s]boxblur=%d:%d:%d:%d[%s]",
-        f.Input, f.LumaRadius, f.LumaPower, f.ChromaRadius, f.ChromaPower, f.Output)
-}
-```
-
-2) (Optional) Provide a constructor for direct use with WithFilter/WithFilters:
-
-```go
-// Example file: pkg/filter_constructors.go
-
-func NewBoxBlur(input, output string, lr, lp, cr, cp int) FilterComplexParser {
-    return BoxBlurFilter{
-        Input: input, Output: output,
-        LumaRadius: lr, LumaPower: lp, ChromaRadius: cr, ChromaPower: cp,
-    }
-}
-```
-
-3) (Optional) Provide a helper for the filter graph builder pattern:
-
-```go
-// Example file: pkg/filter_builders.go
-
-func WithBoxBlur(input, output string, lr, lp, cr, cp int) FilterFn {
-    return func(fg *FilterGraph) {
-        fg.Add(BoxBlurFilter{
-            Input: input, Output: output,
-            LumaRadius: lr, LumaPower: lp, ChromaRadius: cr, ChromaPower: cp,
-        })
-    }
-}
-```
-
-Usage:
-- Constructors with validation:
-  cmd.WithFilter(NewBoxBlur("a", "b", 10, 1, 10, 1))
-- ComplexFilterBuilder with helpers:
-  NewComplexFilterBuilder().With(WithBoxBlur("a", "b", 10, 1, 10, 1)).Build()
-
-Notes and best practices:
-- Keep Validate conservative and informative; fail early during Build().
-- Always render a single chain/subgraph in Parse(). The command joins units with ';'.
-- Prefer typed fields (int, string) with constraints mirrored in Validate.
-
-See existing filters for reference: [go.declaration()](pkg/filter_types.go:25) ScaleFilter, [go.declaration()](pkg/filter_types.go:56) CropFilter, [go.declaration()](pkg/filter_types.go:86) RotateFilter, [go.declaration()](pkg/filter_types.go:110) SplitFilter.
-
-### Adding a new output flag (OutputFlagParser)
-
-Output flags produce flag-value pairs in the final args and also implement:
-- Validate() error
-- Parse() []string
-
-For single-value flags, use a type alias when possible to keep things simple.
-
-Example: add pixel format flag (-pix_fmt)
-
-1) Define a type alias and implement Parse/Validate:
-
-```go
-// Example file: pkg/output_flags.go
-
-type PixelFormatFlag string
-
-func (f PixelFormatFlag) Parse() []string {
-    return []string{"-pix_fmt", string(f)}
-}
-func (f PixelFormatFlag) Validate() error {
-    if f == "" {
-        return fmt.Errorf("pixel format cannot be empty")
-    }
-    return nil
-}
-```
-
-2) Provide a With... builder function to attach it to outputs:
-
-```go
-// Example file: pkg/output_flags.go
-
-func WithPixelFormat(pixfmt string) OutputFlagFn {
-    return func(o *OutputDescriptor) {
-        o.Add(PixelFormatFlag(pixfmt))
-    }
-}
-```
-
-3) (Optional) Add convenience presets if they are common:
-
-```go
-// Example file: pkg/output_flags.go
-
-var (
-    // Common pixel formats
-    PixFmtYUV420P = WithPixelFormat("yuv420p")
-    PixFmtYUV444P = WithPixelFormat("yuv444p")
-)
-```
-
-Usage with OutputBuilder:
-```go
-out := ffmpego.NewOutputBuilder().
-    File("out.mp4").
-    WithFlag(ffmpego.VideoCodecH264).
-    WithFlag(ffmpego.CRFGoodQuality).
-    WithFlag(ffmpego.PixFmtYUV420P). // or WithFlag(ffmpego.WithPixelFormat("yuv420p"))
-    Build()
-```
-
-### Where to plug things in
-
-- New filter struct + constructor:
-  - Struct and Validate/Parse in filter types: [pkg/filter_types.go](pkg/filter_types.go)
-  - Constructor in: [pkg/filter_constructors.go](pkg/filter_constructors.go)
-  - Helper builder in: [pkg/filter_builders.go](pkg/filter_builders.go)
-- New output flag:
-  - Type alias + Parse/Validate + WithXXX in: [pkg/output_flags.go](pkg/output_flags.go)
-
-### Testing your additions
-
-- Add unit tests alongside existing suites:
-  - Filter units: [pkg/filter_types_test.go](pkg/filter_types_test.go)
-  - Command integration paths: [pkg/ffmpego_test.go](pkg/ffmpego_test.go)
-- Typical tests should cover:
-  - Validate() passes with correct inputs and fails with bad inputs (clear error messages)
-  - Parse() exact rendering (compare strings/slices)
-  - End-to-end Build() produces expected ffmpeg args and single -filter_complex joining with ';'
-
 Run:
 ```bash
 go test ./...
 ```
+
+Notable suites:
+- [pkg/ffmpego_test.go](pkg/ffmpego_test.go)
+
+Extending the library
+
+Add new filter-complex units that implement:
+- Validate() error
+- Parse() string (returns one chain/subgraph, e.g. "[in]expr[outs]")
+
+References:
+- Filter unit interface [go.declaration()](pkg/ffmpego.go:14)
+- Filter graph helpers [go.declaration()](pkg/filter_builders.go:7)
+- Output flag interface [go.declaration()](pkg/ffmpego.go:5)
+- Output builder [go.declaration()](pkg/output_builder.go:5)
+
+Example: add BoxBlur filter using FFmpeg's boxblur
+
+```go
+// In pkg/filter_types.go
+type BoxBlurFilter struct {
+	Input        string
+	Output       string
+	LumaRadius   int // lr
+	LumaPower    int // lp
+	ChromaRadius int // cr
+	ChromaPower  int // cp
+}
+
+func (f BoxBlurFilter) Validate() error {
+	if strings.TrimSpace(f.Input) == "" {
+		return fmt.Errorf("boxblur: input label cannot be empty")
+	}
+	if strings.TrimSpace(f.Output) == "" {
+		return fmt.Errorf("boxblur: output label cannot be empty")
+	}
+	if f.LumaRadius < 0 || f.LumaPower < 0 || f.ChromaRadius < 0 || f.ChromaPower < 0 {
+		return fmt.Errorf("boxblur: all parameters must be non-negative")
+	}
+	return nil
+}
+
+func (f BoxBlurFilter) Parse() string {
+	// boxblur=lr:lp:cr:cp
+	return fmt.Sprintf("[%s]boxblur=%d:%d:%d:%d[%s]",
+		f.Input, f.LumaRadius, f.LumaPower, f.ChromaRadius, f.ChromaPower, f.Output)
+}
+```
+
+Add a builder helper:
+```go
+// In pkg/filter_builders.go
+func WithBoxBlur(input, output string, lr, lp, cr, cp int) FilterFn {
+	return func(fg *FilterGraph) {
+		fg.Add(BoxBlurFilter{
+			Input:        strings.TrimSpace(input),
+			Output:       strings.TrimSpace(output),
+			LumaRadius:   lr,
+			LumaPower:    lp,
+			ChromaRadius: cr,
+			ChromaPower:  cp,
+		})
+	}
+}
+```
+
+Usage:
+```go
+fg := ffmpego.NewComplexFilterBuilder().
+	Add(ffmpego.WithBoxBlur("0:v", "b1", 10, 1, 10, 1)).
+	Build()
+```
+
+Best practices:
+- Keep Validate conservative and informative; fail early during Build().
+- Always render a single chain/subgraph in Parse(). The command joins units with ';'.
+- Prefer typed fields (int, string) with constraints mirrored in Validate.
