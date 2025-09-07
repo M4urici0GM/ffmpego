@@ -1,9 +1,6 @@
 package ffmpego
 
-import (
-	"strings"
-	"time"
-)
+import "time"
 
 // OutputFlagParser interface for all output flag operations
 type OutputFlagParser interface {
@@ -36,62 +33,45 @@ type ProgressCallback func(Progress)
 
 // Ffmpego represents an FFmpeg command builder
 type Ffmpego struct {
-	inputs           []string
-	outputs          []OutputDescriptor
+	binary           string
+	flags            *FfmpegOptions
 	graph            *FilterGraph
-	flags            []FfmpegFlagParser
+	outputs          []*OutputDescriptor
 	timeout          time.Duration
 	progressCallback ProgressCallback
 }
 
 // New creates a new FFmpeg command
-func New() *Ffmpego {
+func New(binary string) *Ffmpego {
+	if binary == "" {
+		binary = "/bin/ffmpeg"
+	}
+
 	return &Ffmpego{
-		inputs:  make([]string, 0),
-		outputs: make([]OutputDescriptor, 0),
-		graph:   &FilterGraph{Options: make([]FilterComplexParser, 0)},
-		timeout: 30 * time.Minute,
+		binary:           binary,
+		graph:            &FilterGraph{Options: make([]FilterComplexParser, 0)},
+		flags:            &FfmpegOptions{},
+		outputs:          []*OutputDescriptor{},
+		timeout:          0,
+		progressCallback: nil,
 	}
 }
 
-// Input adds an input file
-func (c *Ffmpego) Input(file string) *Ffmpego {
-	c.inputs = append(c.inputs, file)
-	return c
+func (c *Ffmpego) WithOptions(flags *FfmpegOptions) *Ffmpego {
+    c.flags = flags
+    return c
 }
 
 // Output adds an output configuration
-func (c *Ffmpego) Output(output OutputDescriptor) *Ffmpego {
+func (c *Ffmpego) Output(output *OutputDescriptor) *Ffmpego {
 	c.outputs = append(c.outputs, output)
 	return c
 }
 
 // WithFilter adds a single filter chain or subgraph to the -filter_complex graph.
 // The provided filter will be concatenated with other filters using ';'.
-func (c *Ffmpego) WithFilter(filter FilterComplexParser) *Ffmpego {
-	c.addFilters(filter)
-	return c
-}
-
-// WithFilters adds multiple filters at once to the -filter_complex graph.
-func (c *Ffmpego) WithFilters(filters ...FilterComplexParser) *Ffmpego {
-	c.addFilters(filters...)
-	return c
-}
-
-// addFilters initializes the filter graph if needed and appends the provided filters.
-func (c *Ffmpego) addFilters(filters ...FilterComplexParser) {
-	if c.graph == nil {
-		c.graph = &FilterGraph{Options: make([]FilterComplexParser, 0)}
-	}
-	for _, f := range filters {
-		c.graph.Add(f)
-	}
-}
-
-// Timeout sets the command timeout
-func (c *Ffmpego) Timeout(duration time.Duration) *Ffmpego {
-	c.timeout = duration
+func (c *Ffmpego) WithFilterGraph(graph *FilterGraph) *Ffmpego {
+	c.graph = graph
 	return c
 }
 
@@ -105,31 +85,21 @@ func (c *Ffmpego) WithProgressCallback(callback ProgressCallback) *Ffmpego {
 func (c *Ffmpego) Build() ([]string, error) {
 	args := make([]string, 0)
 
-	// Input files
-	for _, input := range c.inputs {
-		args = append(args, "-i", input)
+	options, err := c.flags.BuildAndValidate()
+	if err != nil {
+		return []string{}, err
 	}
 
-	for _, flag := range c.flags {
-		if err := flag.Validate(); err != nil {
-			return []string{}, err
-		}
-
-		args = append(args, flag.Parse()...)
-	}
+	args = append(args, options...)
 
 	// Filters - combine all filters into a single filter_complex
 	if c.graph != nil && len(c.graph.Options) > 0 {
-		var filterParts []string
-		for _, filter := range c.graph.Options {
-			if err := filter.Validate(); err != nil {
-				return []string{}, err
-			}
-			filterParts = append(filterParts, filter.Parse())
+		complexFilter, err := c.graph.BuildAndValidate()
+		if err != nil {
+			return []string{}, err
 		}
-		if len(filterParts) > 0 {
-			args = append(args, "-filter_complex", strings.Join(filterParts, ";"))
-		}
+
+		args = append(args, "-filter_complex", complexFilter)
 	}
 
 	// Output configurations

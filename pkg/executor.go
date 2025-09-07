@@ -67,9 +67,9 @@ func (c *FfmpegoRunner) Run(ctx context.Context) error {
 	}
 
 	// Set timeout if context doesn't have one
-	if c.ffmpego.timeout > 0 {
+	if *c.ffmpego.timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, c.ffmpego.timeout)
+		ctx, cancel = context.WithTimeout(ctx, *c.ffmpego.timeout)
 		defer cancel()
 	}
 

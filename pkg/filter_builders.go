@@ -14,13 +14,24 @@ func (fg *FilterGraph) Add(filter FilterComplexParser) {
 	fg.Options = append(fg.Options, filter)
 }
 
-type FilterFn = func(*FilterGraph)
+func (fg *FilterGraph) BuildAndValidate() (string, error) {
+	var filterParts []string
+	for _, filter := range fg.Options {
+		if err := filter.Validate(); err != nil {
+			return "", err
+		}
+
+		filterParts = append(filterParts, filter.Parse())
+	}
+
+	return strings.Join(filterParts, ";"), nil
+}
 
 // WithFilterExpr adds a raw filter expression (no labels).
 // Example: "scale=1280:-2"
 func WithFilterExpr(expr string) FilterFn {
 	return func(fg *FilterGraph) {
-		fg.Add(FilterComplex(strings.TrimSpace(expr)))
+		fg.Add(UnlabeledFilter(strings.TrimSpace(expr)))
 	}
 }
 

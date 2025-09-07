@@ -6,13 +6,11 @@ import (
 )
 
 func TestBuild_SimpleOutput_NoFilters(t *testing.T) {
-	cmd := New().
-		Input("in.mp4").
-		Output(*NewOutputDescriptor(
-			WithVideoCodec("libx264"),
-			WithFile("out.mp4"),
-		))
+	output := NewOutputDescriptor(
+		WithVideoCodec("libx264"),
+		WithFile("out.mp4"))
 
+	cmd := New("").Output(output)
 	args, err := cmd.Build()
 	if err != nil {
 		t.Fatalf("Build() error: %v", err)
@@ -30,13 +28,16 @@ func TestBuild_SimpleOutput_NoFilters(t *testing.T) {
 }
 
 func TestBuild_WithFilters_FilterComplexJoin(t *testing.T) {
-	cmd := New().
-		Input("in.mp4").
-		WithFilter(NewCrop("0:v", "a", 800, 600, 100, 50)).
-		WithFilter(NewScale("a", "b", 1280, 720)).
-		Output(*NewOutputDescriptor(
-			WithFile("out.mp4"),
-		))
+	filterGrap := NewComplexFilterBuilder().
+		Add(WithCrop("0:v", "a", 800, 600, 100, 50)).
+		Build()
+
+	output := NewOutputDescriptor(
+		WithFile("out.mp4"))
+
+	cmd := New("").
+		WithFilterGraph(filterGrap).
+		Output(output)
 
 	args, err := cmd.Build()
 	if err != nil {
@@ -62,11 +63,15 @@ func TestBuild_WithFilters_FilterComplexJoin(t *testing.T) {
 func TestOutputBuilder_Integration(t *testing.T) {
 	ob := NewOutputBuilder().
 		WithFlag(VideoCodecH264). // same as WithVideoCodec("libx264")
-		File("built.mp4")
+		File("built.mp4").
+        Build()
 
-	cmd := New().
-		Input("in.mp4").
-		Output(ob.Build())
+    flags := NewFfmpegOptions(
+        WithInput("in.mp4"))
+
+	cmd := New("").
+        WithOptions(flags).
+		Output(ob)
 
 	args, err := cmd.Build()
 	if err != nil {
@@ -82,14 +87,20 @@ func TestOutputBuilder_Integration(t *testing.T) {
 }
 
 func TestComplexFilterBuilder_Apply(t *testing.T) {
-	builder := NewComplexFilterBuilder().
-		With(WithCrop("0:v", "s1", 800, 600, 100, 50)).
-		With(WithRotate("s1", "s2", Rotate90)).
-		With(WithScale("s2", "s3", 1280, 720))
+	flags := NewFfmpegOptions(
+		WithInput("./input.mp4"),
+		WithOverwrite())
 
-	cmd := New().Input("in.mp4")
-	builder.Apply(cmd)
-	cmd = cmd.Output(*NewOutputDescriptor(WithFile("out.mp4")))
+	filterGraph := NewComplexFilterBuilder().
+		Add(WithCrop("0:v", "s1", 800, 600, 100, 50)).
+		Add(WithRotate("s1", "s2", Rotate90)).
+		Add(WithScale("s2", "s3", 1280, 720)).
+		Build()
+
+	cmd := New("").
+		WithOptions(flags).
+		WithFilterGraph(filterGraph).
+		Output(NewOutputDescriptor(WithFile("out.mp4")))
 
 	args, err := cmd.Build()
 	if err != nil {
@@ -118,12 +129,24 @@ func TestComplexFilterBuilder_Apply(t *testing.T) {
 
 func TestBuild_InvalidFilter_ReturnsError(t *testing.T) {
 	// Invalid: missing input label
-	bad := ScaleFilter{Input: "", Output: "x", Width: 1280, Height: 720}
+	options := &FfmpegOptions{
+		flags: []FfmpegFlagParser{
+			Input{"in.mp4"},
+			Overwrite{},
+		},
+	}
 
-	cmd := New().
-		Input("in.mp4").
-		WithFilter(bad).
-		Output(*NewOutputDescriptor(WithFile("out.mp4")))
+	filterGraph := &FilterGraph{
+		Options: []FilterComplexParser{
+			ScaleFilter{Input: "", Output: "x", Width: 1280, Height: 720},
+		},
+	}
+
+	output := NewOutputDescriptor(WithFile("out.mp4"))
+	cmd := New("").
+		WithOptions(options).
+		WithFilterGraph(filterGraph).
+		Output(output)
 
 	_, err := cmd.Build()
 	if err == nil {

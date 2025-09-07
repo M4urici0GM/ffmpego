@@ -4,6 +4,12 @@ var (
 	PipeProgress = WithProgress("pipe:1")
 )
 
+func WithInput(input ...string) FfmpegFlagFn {
+	return func(options *FfmpegOptions) {
+		options.Add(Input(input))
+	}
+}
+
 // Adds new '-y' flag to ffmpeg command.
 func WithOverwrite() FfmpegFlagFn {
 	return func(options *FfmpegOptions) {

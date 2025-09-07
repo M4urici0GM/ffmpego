@@ -27,10 +27,11 @@ func (b *OutputBuilder) File(path string) *OutputBuilder {
 
 // Build materializes an OutputDescriptor with all collected options.
 // It returns the descriptor by value for compatibility with Ffmpego.Output(OutputDescriptor).
-func (b *OutputBuilder) Build() OutputDescriptor {
+func (b *OutputBuilder) Build() *OutputDescriptor {
 	desc := NewOutputDescriptor(b.opts...)
 	if desc == nil {
-		return OutputDescriptor{}
+		return &OutputDescriptor{}
 	}
-	return *desc
+
+	return desc
 }

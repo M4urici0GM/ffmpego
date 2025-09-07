@@ -22,6 +22,32 @@ const (
 	Rotate90 TransposeMode = TransposeClockwise
 )
 
+type FilterFn = func(*FilterGraph)
+
+type UnlabeledFilter string
+
+type LabeledFilter struct {
+	Inputs  []string
+	Expr    string
+	Outputs []string
+}
+
+func (f LabeledFilter) Validate() error {
+	return nil
+}
+
+func (f LabeledFilter) Parse() string {
+	return fmt.Sprintf("[%s]%s[%s]", strings.Join(f.Inputs, ":"), f.Expr, strings.Join(f.Outputs, ":"))
+}
+
+func (f UnlabeledFilter) Validate() error {
+	return nil
+}
+
+func (f UnlabeledFilter) Parse() string {
+	return string(f)
+}
+
 // ScaleFilter renders: "[input]scale=width:height[output]"
 type ScaleFilter struct {
 	Input  string
